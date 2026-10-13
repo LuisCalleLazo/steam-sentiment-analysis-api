@@ -12,4 +12,5 @@ public class CommentTop
   public string Comment { get; set; } = null!;
   public int Count { get; set; }
   public bool IsBad { get; set; }
+  public bool IsGood { get; set; }
 }

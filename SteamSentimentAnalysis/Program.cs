@@ -1,3 +1,5 @@
+using SteamSentimentAnalysis.Context;
+using SteamSentimentAnalysis.Repositories;
 using SteamSentimentAnalysis.Services;
 using SteamSentimentAnalysis.Services.Interfaces;
 
@@ -8,10 +10,15 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// MongoDB
+builder.Services.AddSingleton<MongoDbContext>();
+builder.Services.AddScoped<ICommentRepository, CommentRepository>();
+
+// Services
 builder.Services.AddScoped<ISentimentAnalysis, SentimentService>();
 builder.Services.AddScoped<IReportService, ReportService>();
 builder.Services.AddHttpClient<IGameService, GameService>();
-builder.Services.AddScoped<ICommentService, CommentService>();
+builder.Services.AddHttpClient<ICommentService, CommentService>();
 
 builder.Services.AddCors(options =>
 {
