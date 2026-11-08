@@ -3,7 +3,6 @@ namespace SteamSentimentAnalysis.DTOs;
 public class CommentDto
 {
   public string Comment { get; set; } = null!;
-  public DateTime Date { get; set; }
   public double HoursGameplay { get; set; }
 }
 

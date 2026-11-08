@@ -12,32 +12,39 @@ namespace SteamSentimentAnalysis.Services;
 
 public partial class CommentService(
   HttpClient httpClient,
-  ICommentRepository commentRepository) : ICommentService
+  ICommentRepository commentRepository,
+  ISentimentAnalysis sentimentService) : ICommentService
 {
-  private const int MaxPages = 5;
+  private const int MaxPages = 30;
+  private const int TargetComments = 50; // objetivo mínimo
 
   public async Task<List<CommentDto>> GetCommentsByGameId(string gameId)
   {
-    var scraped = new Dictionary<string, Comment>();
+    var scraped = new Dictionary<string, RawComment>();
 
     for (var page = 1; page <= MaxPages; page++)
     {
-      var comments = await ScrapePage(gameId, page);
-      if (comments.Count == 0)
+      var pageComments = await ScrapePage(gameId, page);
+      if (pageComments.Count == 0)
         break;
 
-      // Si la página no aportó nada nuevo, Steam está repitiendo contenido
-      var added = comments.Count(c => scraped.TryAdd(c.Id, c));
+      var added = pageComments.Count(c => scraped.TryAdd(c.Id, c));
+
+      // Solo paramos si Steam repite TODO el contenido de la página
       if (added == 0)
         break;
 
-      await Task.Delay(500); // no saturar a Steam
+      // Si ya tenemos suficientes, paramos de scrapear
+      if (scraped.Count >= TargetComments)
+        break;
+
+      await Task.Delay(500);
     }
 
     if (scraped.Count == 0)
       return [];
 
-    // Evitar duplicados en la base de datos
+    // Filtrar los que ya existen en BD ANTES de analizar sentimiento
     var existing = await commentRepository.GetByGameIdAsync(gameId);
     var existingIds = existing.Select(c => c.Id).ToHashSet();
 
@@ -45,27 +52,56 @@ public partial class CommentService(
       .Where(c => !existingIds.Contains(c.Id))
       .ToList();
 
+    // Analizar sentimiento SOLO de los nuevos (en paralelo)
     if (toInsert.Count > 0)
-      await commentRepository.CreateManyAsync(toInsert);
+    {
+      var sentimentTasks = toInsert
+        .Select(c => sentimentService.GetAnalysisSentimentByComment(c.Content))
+        .ToArray();
 
+      var sentimentResults = await Task.WhenAll(sentimentTasks);
+
+      var entities = new List<Comment>(toInsert.Count);
+      for (var i = 0; i < toInsert.Count; i++)
+      {
+        var raw = toInsert[i];
+        var isGood = sentimentResults[i];
+
+        entities.Add(new Comment
+        {
+          Id = raw.Id,
+          Content = raw.Content,
+          HoursGameplay = raw.Hours,
+          IsGood = isGood,
+          IsBad = !isGood,
+          GameId = gameId,
+          GameTitle = raw.GameTitle
+        });
+      }
+
+      await commentRepository.CreateManyAsync(entities);
+    }
+
+    // Devolver TODOS los comentarios únicos scrapeados (nuevos + ya existentes en esta sesión)
     return scraped.Values
       .Select(c => new CommentDto
       {
         Comment = c.Content,
-        Date = c.Date,
-        HoursGameplay = c.HoursGameplay
+        HoursGameplay = c.Hours
       })
       .ToList();
   }
 
-  private async Task<List<Comment>> ScrapePage(string gameId, int page)
+  private async Task<List<RawComment>> ScrapePage(string gameId, int page)
   {
+    // Quitamos filterLanguage para traer TODAS las reseñas (no solo español).
+    // Si quieres solo español, deja filterLanguage=spanish pero entonces
+    // el número de comentarios dependerá de cuántos haya en ese idioma.
     var url =
       $"https://steamcommunity.com/app/{Uri.EscapeDataString(gameId)}/reviews/" +
-      $"?p={page}&browsefilter=mostrecent&filterLanguage=spanish&l=spanish";
+      $"?p={page}&browsefilter=mostrecent&l=spanish";
 
     using var request = new HttpRequestMessage(HttpMethod.Get, url);
-
     request.Headers.UserAgent.ParseAdd(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
       "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -86,26 +122,33 @@ public partial class CommentService(
     var cards = document.DocumentNode.SelectNodes(
       $"//div[@id='page{page}']//div[contains(@class,'apphub_CardContentMain')]");
 
+    if (cards is null)
+      return [];
+
     var gameTitle = HtmlEntity.DeEntitize(
       document.DocumentNode.SelectSingleNode(
         "//div[contains(@class,'apphub_AppName')]")?.InnerText ?? "").Trim();
 
-    return (from card in cards
-      let content = ExtractContent(card)
-      where !string.IsNullOrWhiteSpace(content)
-      let dateText = card.SelectSingleNode(".//div[contains(@class,'date_posted')]")?.InnerText
-      let hoursText = card.SelectSingleNode(".//div[contains(@class,'hours')]")?.InnerText
-      select new Comment
+    var result = new List<RawComment>();
+
+    foreach (var card in cards)
+    {
+      var content = ExtractContent(card);
+      if (string.IsNullOrWhiteSpace(content))
+        continue;
+
+      var hoursText = card.SelectSingleNode(".//div[contains(@class,'hours')]")?.InnerText;
+
+      result.Add(new RawComment
       {
         Id = BuildId(gameId, content),
         Content = content,
-        Date = ParseDate(dateText),
-        HoursGameplay = ParseHours(hoursText),
-        IsBad = false,
-        IsGood = false,
-        GameId = gameId,
+        Hours = ParseHours(hoursText),
         GameTitle = gameTitle
-      }).ToList();
+      });
+    }
+
+    return result;
   }
 
   private static string ExtractContent(HtmlNode card)
@@ -113,7 +156,10 @@ public partial class CommentService(
     var textNode = card.SelectSingleNode(
       ".//div[contains(@class,'apphub_CardTextContent')]");
 
-    // Quitar la fecha para que no se mezcle con el texto
+    if (textNode is null)
+      return string.Empty;
+
+    // Quitar la fecha
     textNode.SelectSingleNode(".//div[contains(@class,'date_posted')]")?.Remove();
 
     // Conservar saltos de línea
@@ -125,14 +171,12 @@ public partial class CommentService(
     return MultiBlankLines().Replace(text.Trim(), "\n\n");
   }
 
-  // Id determinista: mismo juego + mismo texto = mismo id => sin duplicados
   private static string BuildId(string gameId, string content)
   {
     var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{gameId}|{content}"));
     return Convert.ToHexString(bytes)[..32];
   }
 
-  // "11.6 h registradas" => 11.6
   private static double ParseHours(string? text)
   {
     if (string.IsNullOrWhiteSpace(text))
@@ -142,32 +186,22 @@ public partial class CommentService(
     if (!match.Success)
       return 0;
 
-    var number = match.Value.Replace(",", ""); // separador de miles
+    var number = match.Value.Replace(",", "");
     return double.TryParse(number, NumberStyles.Float,
       CultureInfo.InvariantCulture, out var hours)
       ? hours
       : 0;
   }
 
-  // "Publicada: 12 de octubre" (sin año si es del año actual)
-  // "Publicada: 12 de octubre de 2025"
-  private static DateTime ParseDate(string? text)
-  {
-    if (string.IsNullOrWhiteSpace(text))
-      return default;
-
-    var clean = Regex.Replace(HtmlEntity.DeEntitize(text).Trim(), @"^[^:]*:\s*", "");
-
-    string[] formats = ["d 'de' MMMM 'de' yyyy", "d 'de' MMMM"];
-
-    if (!DateTime.TryParseExact(clean, formats,
-          CultureInfo.GetCultureInfo("es-ES"), DateTimeStyles.None, out var date))
-      return default;
-
-    // Sin año, .NET asume el actual; si queda en el futuro era del año pasado
-    return date > DateTime.Today ? date.AddYears(-1) : date;
-  }
-
   [GeneratedRegex(@"\n{3,}")]
   private static partial Regex MultiBlankLines();
+
+  // Clase auxiliar interna para no arrastrar IsGood/IsBad antes de tiempo
+  private sealed class RawComment
+  {
+    public string Id { get; init; } = "";
+    public string Content { get; init; } = "";
+    public double Hours { get; init; }
+    public string GameTitle { get; init; } = "";
+  }
 }

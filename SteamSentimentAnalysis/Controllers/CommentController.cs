@@ -5,7 +5,8 @@ namespace SteamSentimentAnalysis.Controllers;
 
 [Route("api/comment")]
 [ApiController]
-public class CommentController(ICommentService service) : ControllerBase
+public class CommentController(
+  ICommentService service) : ControllerBase
 {
   [HttpGet]
   public async Task<IActionResult> GetComments(string gameId)
