@@ -2,11 +2,10 @@ name: CI/CD Pipeline - SteamSentimentAnalysis
 
 on:
   push:
-    branches: [ "main" ] # Se ejecuta automáticamente al hacer push a main
+    branches: [ "main" ]
 
 env:
   REGISTRY: ghcr.io
-  # Forzamos el nombre de la imagen completamente a minúsculas usando una función interna
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -28,14 +27,13 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Token automático de GitHub
 
       - name: Extraer metadatos de Docker (Tags y Labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Convertimos a minúsculas en el paso del build
-          images: ${{ env.REGISTRY }}/${{ lower(env.IMAGE_NAME) }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
@@ -60,8 +58,7 @@ jobs:
         env:
           CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           REGISTRY: ${{ env.REGISTRY }}
-          # Convertimos a minúsculas también en el entorno del deploy
-          IMAGE_NAME: ${{ lower(env.IMAGE_NAME) }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
         with:
@@ -70,13 +67,10 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           envs: CONNECTION_STRING,REGISTRY,IMAGE_NAME,GH_TOKEN,GH_ACTOR
           script: |
-            # 0. Asegurar que la red de Docker exista en el VPS
-            docker network create steam-sentiment || true
-
-            # 1. Autenticar Docker en el registro de GitHub
+            # 1. Autenticar Docker en el registro de GitHub desde el VPS externo
             echo "$GH_TOKEN" | docker login $REGISTRY -u $GH_ACTOR --password-stdin
 
-            # 2. Descargar la última versión de la imagen (Ahora sí irá en minúsculas)
+            # 2. Descargar la última versión de la imagen
             docker pull $REGISTRY/$IMAGE_NAME:latest
 
             # 3. Detener y eliminar el contenedor anterior si ya existe
