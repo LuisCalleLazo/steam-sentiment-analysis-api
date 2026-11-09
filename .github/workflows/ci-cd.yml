@@ -2,11 +2,11 @@ name: CI/CD Pipeline - SteamSentimentAnalysis
 
 on:
   push:
-    branches: [ "main" ] # Se ejecuta automáticamente al hacer push a main
+    branches: [ "main" ]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }} # Guardará la imagen como ghcr.io/tu-usuario/tu-repo
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
