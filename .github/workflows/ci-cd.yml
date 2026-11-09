@@ -1,0 +1,82 @@
+name: CI/CD Pipeline - SteamSentimentAnalysis
+
+on:
+  push:
+    branches: [ "main" ] # Se ejecuta automáticamente al hacer push a main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }} # Guardará la imagen como ghcr.io/tu-usuario/tu-repo
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Iniciar sesión en GitHub Container Registry
+        uses: actions/docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Token automático de GitHub
+
+      - name: Extraer metadatos de Docker (Tags y Labels)
+        id: meta
+        uses: actions/docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Construir y subir Imagen Docker
+        uses: actions/docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ id.meta.outputs.tags }}
+          labels: ${{ id.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push # Solo corre si el build funciona
+
+    steps:
+      - name: Desplegar en el servidor vía SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            # 1. Autenticar Docker en el registro de GitHub desde el servidor externo
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+            # 2. Descargar la última versión de la imagen compilada en CI
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+            # 3. Detener y eliminar el contenedor anterior si ya existe
+            docker stop steam-api || true
+            docker rm steam-api || true
+
+            # 4. Correr tu contenedor con tus parámetros exactos
+            docker run -d -p 5002:8080 \
+              -e "MongoDbSettings__ConnectionString=${{ secrets.DB_CONNECTION_STRING }}" \
+              --add-host=host.docker.internal:host-gateway \
+              --name steam-api \
+              --restart unless-stopped \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+            # 5. Limpieza de imágenes huérfanas/antiguas para no llenar el disco
+            docker image prune -f
