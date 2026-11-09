@@ -2,10 +2,11 @@ name: CI/CD Pipeline - SteamSentimentAnalysis
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main" ] # Se ejecuta automáticamente al hacer push a main
 
 env:
   REGISTRY: ghcr.io
+  # Forzamos el nombre de la imagen completamente a minúsculas usando una función interna
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -27,13 +28,14 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Token automático de GitHub
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extraer metadatos de Docker (Tags y Labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Convertimos a minúsculas en el paso del build
+          images: ${{ env.REGISTRY }}/${{ lower(env.IMAGE_NAME) }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
@@ -58,7 +60,8 @@ jobs:
         env:
           CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           REGISTRY: ${{ env.REGISTRY }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          # Convertimos a minúsculas también en el entorno del deploy
+          IMAGE_NAME: ${{ lower(env.IMAGE_NAME) }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
         with:
@@ -70,10 +73,10 @@ jobs:
             # 0. Asegurar que la red de Docker exista en el VPS
             docker network create steam-sentiment || true
 
-            # 1. Autenticar Docker en el registro de GitHub desde el VPS externo
+            # 1. Autenticar Docker en el registro de GitHub
             echo "$GH_TOKEN" | docker login $REGISTRY -u $GH_ACTOR --password-stdin
 
-            # 2. Descargar la última versión de la imagen
+            # 2. Descargar la última versión de la imagen (Ahora sí irá en minúsculas)
             docker pull $REGISTRY/$IMAGE_NAME:latest
 
             # 3. Detener y eliminar el contenedor anterior si ya existe
