@@ -43,8 +43,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ id.meta.outputs.tags }}
-          labels: ${{ id.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -55,28 +55,34 @@ jobs:
     steps:
       - name: Desplegar en el servidor vía SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: CONNECTION_STRING,REGISTRY,IMAGE_NAME,GH_TOKEN,GH_ACTOR
           script: |
-            # 1. Autenticar Docker en el registro de GitHub desde el servidor externo
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+            # 1. Autenticar Docker en el registro de GitHub
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login $REGISTRY -u ${{ github.actor }} --password-stdin
 
-            # 2. Descargar la última versión de la imagen compilada en CI
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            # 2. Descargar la última versión de la imagen
+            docker pull $REGISTRY/$IMAGE_NAME:latest
 
             # 3. Detener y eliminar el contenedor anterior si ya existe
             docker stop steam-api || true
             docker rm steam-api || true
 
-            # 4. Correr tu contenedor con tus parámetros exactos
+            # 4. Correr tu contenedor conectado a la red 'steam-sentiment'
             docker run -d -p 5002:8080 \
-              -e "MongoDbSettings__ConnectionString=${{ secrets.DB_CONNECTION_STRING }}" \
+              -e "MongoDbSettings__ConnectionString=$CONNECTION_STRING" \
+              --network steam-sentiment \
               --add-host=host.docker.internal:host-gateway \
               --name steam-api \
               --restart unless-stopped \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+              $REGISTRY/$IMAGE_NAME:latest
 
-            # 5. Limpieza de imágenes huérfanas/antiguas para no llenar el disco
+            # 5. Limpieza de imágenes huérfanas
             docker image prune -f
