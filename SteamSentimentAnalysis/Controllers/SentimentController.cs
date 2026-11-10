@@ -49,7 +49,7 @@ public class SentimentController(ISentimentAnalysis service) : ControllerBase
   }
 
   /// <summary>
-  /// GET /api/sentiment/top?startDate={date}&amp;endDate={date}
+  /// GET /zapi/sentiment/top?startDate={date}&amp;endDate={date}
   /// Returns the top 10 most-mentioned comments globally,
   /// with their IsGood/IsBad flags. Date filter is optional.
   /// </summary>
