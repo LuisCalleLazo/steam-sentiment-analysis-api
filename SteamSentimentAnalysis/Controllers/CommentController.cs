@@ -5,10 +5,14 @@ namespace SteamSentimentAnalysis.Controllers;
 
 [Route("api/comment")]
 [ApiController]
-public class CommentController(
-  ICommentService service) : ControllerBase
+public class CommentController(ICommentService service) : ControllerBase
 {
-  [HttpGet]
+  /// <summary>
+  /// GET /api/comment/list?gameId={gameId}
+  /// Scrapes Steam reviews for the given game, runs sentiment analysis,
+  /// persists new comments to MongoDB, and returns the full list.
+  /// </summary>
+  [HttpGet("list")]
   public async Task<IActionResult> GetComments(string gameId)
   {
     try
@@ -21,5 +25,4 @@ public class CommentController(
       return BadRequest(e.Message);
     }
   }
-
 }

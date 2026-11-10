@@ -45,10 +45,13 @@ public class SentimentService(
   {
     var comments = await commentRepository.GetByGameIdAsync(gameId);
 
-    // Filtrado por fecha (ajusta según si Comment tiene propiedad Date)
-    // var filtered = comments.Where(c =>
-    //   (!startDate.HasValue || c.Date >= startDate) &&
-    //   (!endDate.HasValue   || c.Date <= endDate)).ToList();
+    // Filtro por fecha desactivado: los comentarios scrapeados no tienen fecha.
+    // Cuando el scraper capture fechas reales, descomentar:
+    // var filtered = comments
+    //   .Where(c =>
+    //     (!startDate.HasValue || c.Date >= startDate.Value) &&
+    //     (!endDate.HasValue   || c.Date <= endDate.Value))
+    //   .ToList();
     var filtered = comments.ToList();
 
     if (filtered.Count == 0)
@@ -112,8 +115,12 @@ public class SentimentService(
   {
     var comments = await commentRepository.GetAllAsync();
 
-    // Si Comment tuviera fecha, aquí filtrarías:
-    // comments = comments.Where(c => ...);
+    // Filtro por fecha desactivado: comentarios sin fecha en Mongo.
+    // var filtered = comments
+    //   .Where(c =>
+    //     (!startDate.HasValue || c.Date >= startDate.Value) &&
+    //     (!endDate.HasValue   || c.Date <= endDate.Value))
+    //   .ToList();
 
     return comments
       .GroupBy(c => c.Content)

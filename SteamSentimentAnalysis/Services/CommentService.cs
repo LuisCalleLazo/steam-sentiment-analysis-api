@@ -20,6 +20,24 @@ public partial class CommentService(
 
   public async Task<List<CommentDto>> GetCommentsByGameId(string gameId)
   {
+    // ── 1. Mongo-first: si ya tenemos comentarios analizados, devolverlos directo ──
+    var existing = await commentRepository.GetByGameIdAsync(gameId);
+
+    if (existing.Count > 0)
+    {
+      return existing
+        .OrderByDescending(c => c.Date)
+        .Select(c => new CommentDto
+        {
+          Comment = c.Content,
+          HoursGameplay = c.HoursGameplay,
+          Sentiment = c.IsGood ? 1 : (c.IsBad ? -1 : 0),
+          Date = c.Date == default ? DateTime.UtcNow : c.Date
+        })
+        .ToList();
+    }
+
+    // ── 2. Si no hay datos en Mongo, scrapear Steam ───────────────────────────────
     var scraped = new Dictionary<string, RawComment>();
 
     for (var page = 1; page <= MaxPages; page++)
@@ -30,11 +48,9 @@ public partial class CommentService(
 
       var added = pageComments.Count(c => scraped.TryAdd(c.Id, c));
 
-      // Solo paramos si Steam repite TODO el contenido de la página
       if (added == 0)
         break;
 
-      // Si ya tenemos suficientes, paramos de scrapear
       if (scraped.Count >= TargetComments)
         break;
 
@@ -44,15 +60,12 @@ public partial class CommentService(
     if (scraped.Count == 0)
       return [];
 
-    // Filtrar los que ya existen en BD ANTES de analizar sentimiento
-    var existing = await commentRepository.GetByGameIdAsync(gameId);
+    // ── 3. Analizar sentimiento de los nuevos y guardar en Mongo ─────────────────
     var existingIds = existing.Select(c => c.Id).ToHashSet();
-
     var toInsert = scraped.Values
       .Where(c => !existingIds.Contains(c.Id))
       .ToList();
 
-    // Analizar sentimiento SOLO de los nuevos (en paralelo)
     if (toInsert.Count > 0)
     {
       var sentimentTasks = toInsert
@@ -72,6 +85,7 @@ public partial class CommentService(
           Id = raw.Id,
           Content = raw.Content,
           HoursGameplay = raw.Hours,
+          Date = raw.Date,
           IsGood = isGood,
           IsBad = !isGood,
           GameId = gameId,
@@ -82,12 +96,17 @@ public partial class CommentService(
       await commentRepository.CreateManyAsync(entities);
     }
 
-    // Devolver TODOS los comentarios únicos scrapeados (nuevos + ya existentes en esta sesión)
-    return scraped.Values
+    // ── 4. Devolver desde Mongo (ya con IsGood/IsBad calculados) ─────────────────
+    var allFromDb = await commentRepository.GetByGameIdAsync(gameId);
+
+    return allFromDb
+      .OrderByDescending(c => c.Date)
       .Select(c => new CommentDto
       {
         Comment = c.Content,
-        HoursGameplay = c.Hours
+        HoursGameplay = c.HoursGameplay,
+        Sentiment = c.IsGood ? 1 : (c.IsBad ? -1 : 0),
+        Date = c.Date == default ? DateTime.UtcNow : c.Date
       })
       .ToList();
   }
@@ -159,7 +178,8 @@ public partial class CommentService(
     if (textNode is null)
       return string.Empty;
 
-    // Quitar la fecha
+    // Extraer texto de la fecha ANTES de quitar el nodo
+    // (el nodo date_posted se quita más abajo)
     textNode.SelectSingleNode(".//div[contains(@class,'date_posted')]")?.Remove();
 
     // Conservar saltos de línea
@@ -193,6 +213,47 @@ public partial class CommentService(
       : 0;
   }
 
+  /// <summary>
+  /// Parse a Steam date string like "Publicado el 14 nov. 2024" into a DateTime.
+  /// Falls back to UtcNow if parsing fails.
+  /// </summary>
+  private static DateTime ParseDate(string? text)
+  {
+    if (string.IsNullOrWhiteSpace(text))
+      return DateTime.UtcNow;
+
+    // Strip common Steam prefixes
+    var cleaned = Regex.Replace(text, @"(?i)(publicado el|posted|fecha:|:)", "").Trim();
+
+    // Try Spanish short month format: "14 nov. 2024" or "14 nov 2024"
+    cleaned = cleaned.Replace(".", "").Trim();
+
+    string[] formats =
+    [
+      "d MMM yyyy",
+      "d MMMM yyyy",
+      "MMM d, yyyy",
+      "MMMM d, yyyy",
+      "d MMM",
+      "d MMMM"
+    ];
+
+    var cultures = new[] { new CultureInfo("es-ES"), CultureInfo.InvariantCulture };
+
+    foreach (var culture in cultures)
+      foreach (var fmt in formats)
+        if (DateTime.TryParseExact(cleaned, fmt, culture,
+              DateTimeStyles.None, out var parsed))
+          return parsed.Year < 100
+            ? parsed.AddYears(2000)
+            : parsed;
+
+    // Last resort: try general parse
+    return DateTime.TryParse(cleaned, out var fallback)
+      ? fallback
+      : DateTime.UtcNow;
+  }
+
   [GeneratedRegex(@"\n{3,}")]
   private static partial Regex MultiBlankLines();
 
@@ -202,6 +263,7 @@ public partial class CommentService(
     public string Id { get; init; } = "";
     public string Content { get; init; } = "";
     public double Hours { get; init; }
+    public DateTime Date { get; init; }
     public string GameTitle { get; init; } = "";
   }
 }
